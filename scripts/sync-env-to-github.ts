@@ -120,17 +120,122 @@ async function clearRepoSecrets(octokit: Octokit, owner: string, repo: string) {
   }
 }
 
+async function listEnvVariables(octokit: Octokit, owner: string, repo: string, environmentName: string) {
+  const debugResponses = process.env.DEBUG_GITHUB_ENV_VARS === '1';
+  return octokit.paginate(
+    octokit.rest.actions.listEnvironmentVariables,
+    {
+      owner,
+      repo,
+      environment_name: environmentName,
+      per_page: 100,
+    },
+    (response) => {
+      const data = response.data as
+        | Array<{ name?: string }>
+        | { variables?: Array<{ name?: string }>; total_count?: number };
+      const variables = Array.isArray(data) ? data : data.variables ?? [];
+      if (debugResponses) {
+        log.detail(`Env vars response: ${JSON.stringify(data)}`);
+      }
+      return variables;
+    }
+  );
+}
+
+async function waitForEnvVariablesCleared(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  environmentName: string
+) {
+  const timeoutMs = 15000;
+  const intervalMs = 500;
+  const start = Date.now();
+  let attempt = 0;
+
+  while (true) {
+    const variables = (await listEnvVariables(octokit, owner, repo, environmentName)).filter(
+      (variable) => variable?.name
+    );
+
+    if (variables.length === 0) {
+      if (attempt > 0) {
+        log.detail('Environment variables cleared');
+      }
+      return;
+    }
+
+    if (Date.now() - start >= timeoutMs) {
+      const names = variables
+        .map((variable) => variable.name)
+        .filter(Boolean)
+        .slice(0, 10)
+        .join(', ');
+      const extra = variables.length > 10 ? ` (+${variables.length - 10} more)` : '';
+      throw new Error(`Environment variables still exist after ${timeoutMs}ms: ${names}${extra}`);
+    }
+
+    if (attempt === 0) {
+      log.detail('Waiting for environment variables to clear...');
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    attempt += 1;
+  }
+}
+
+async function createEnvVariableWithRetry(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  environmentName: string,
+  name: string,
+  value: string
+) {
+  const timeoutMs = 15000;
+  const intervalMs = 500;
+  const start = Date.now();
+  let attempt = 0;
+
+  while (true) {
+    try {
+      await octokit.rest.actions.createEnvironmentVariable({
+        owner,
+        repo,
+        environment_name: environmentName,
+        name,
+        value,
+      });
+      log.success(`Set env variable: ${name}`);
+      return;
+    } catch (error) {
+      const status = (error as { status?: number }).status;
+      if (status !== 409) {
+        throw error;
+      }
+      if (Date.now() - start >= timeoutMs) {
+        throw new Error(`Environment variable still exists after ${timeoutMs}ms: ${name}`);
+      }
+      if (attempt === 0) {
+        log.detail(`Waiting to recreate env variable: ${name}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      attempt += 1;
+    }
+  }
+}
+
 /**
  * Clear all environment variables
  */
 async function clearEnvVariables(octokit: Octokit, owner: string, repo: string, environmentName: string) {
-  const { data } = await octokit.rest.actions.listEnvironmentVariables({
-    owner,
-    repo,
-    environment_name: environmentName,
-  });
+  const variables = await listEnvVariables(octokit, owner, repo, environmentName);
 
-  for (const variable of data.variables) {
+  for (const variable of variables) {
+    if (!variable?.name) {
+      log.warn('Skipping environment variable without a name');
+      continue;
+    }
     await octokit.rest.actions.deleteEnvironmentVariable({
       owner,
       repo,
@@ -233,16 +338,10 @@ async function syncEnvVariables(
 
   await ensureEnvironment(octokit, owner, repo, environmentName);
   await clearEnvVariables(octokit, owner, repo, environmentName);
+  await waitForEnvVariablesCleared(octokit, owner, repo, environmentName);
 
   for (const [name, value] of Object.entries(variables)) {
-    await octokit.rest.actions.createEnvironmentVariable({
-      owner,
-      repo,
-      environment_name: environmentName,
-      name,
-      value,
-    });
-    log.success(`Set env variable: ${name}`);
+    await createEnvVariableWithRetry(octokit, owner, repo, environmentName, name, value);
   }
 }
 
