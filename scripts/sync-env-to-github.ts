@@ -1,9 +1,12 @@
 #!/usr/bin/env tsx
 
 import { Octokit } from '@octokit/rest';
+import { createRequire } from 'module';
 import { resolve } from 'path';
 import { parseEnvFile, ParsedEnv } from './env-parser';
 import { log, firstNonEmpty, deriveSecretIds, resolveOwnerRepo } from './shared';
+
+const require = createRequire(import.meta.url);
 
 interface Config {
   envFile: string;
@@ -18,7 +21,7 @@ interface Config {
  */
 async function encryptSecret(publicKey: string, secretValue: string): Promise<string> {
   // Using libsodium-wrappers for encryption
-  const sodiumModule = await import('libsodium-wrappers');
+  const sodiumModule = require('libsodium-wrappers');
   const sodium = 'default' in sodiumModule ? sodiumModule.default : sodiumModule;
   await sodium.ready;
 
