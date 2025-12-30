@@ -33,6 +33,18 @@ async function encryptSecret(publicKey: string, secretValue: string): Promise<st
   return sodium.to_base64(encBytes, sodium.base64_variants.ORIGINAL);
 }
 
+function normalizePemSecret(value: string): string {
+  if (!value.includes('-----BEGIN') || !value.includes('-----END')) {
+    return value;
+  }
+
+  if (value.includes('\\n')) {
+    return value.replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n');
+  }
+
+  return value;
+}
+
 /**
  * Get repository public key for secrets encryption
  */
@@ -307,7 +319,8 @@ async function syncRepoSecrets(octokit: Octokit, owner: string, repo: string, se
   const publicKey = await getRepoPublicKey(octokit, owner, repo);
 
   for (const [name, value] of Object.entries(secrets)) {
-    const encryptedValue = await encryptSecret(publicKey.key, value);
+    const normalizedValue = normalizePemSecret(value);
+    const encryptedValue = await encryptSecret(publicKey.key, normalizedValue);
     await octokit.rest.actions.createOrUpdateRepoSecret({
       owner,
       repo,
@@ -368,7 +381,8 @@ async function syncEnvSecrets(
   const publicKey = await getEnvPublicKey(octokit, owner, repo, environmentName);
 
   for (const [name, value] of Object.entries(secrets)) {
-    const encryptedValue = await encryptSecret(publicKey.key, value);
+    const normalizedValue = normalizePemSecret(value);
+    const encryptedValue = await encryptSecret(publicKey.key, normalizedValue);
     await octokit.rest.actions.createOrUpdateEnvironmentSecret({
       owner,
       repo,

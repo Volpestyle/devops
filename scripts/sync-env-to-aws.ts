@@ -20,6 +20,24 @@ interface Config {
   repoSecretName: string;
 }
 
+function normalizePemSecret(value: string): string {
+  if (!value.includes('-----BEGIN') || !value.includes('-----END')) {
+    return value;
+  }
+
+  if (value.includes('\\n')) {
+    return value.replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n');
+  }
+
+  return value;
+}
+
+function normalizeSecretRecord(secrets: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(secrets).map(([key, value]) => [key, normalizePemSecret(value)])
+  );
+}
+
 async function secretExists(client: SecretsManagerClient, secretId: string): Promise<boolean> {
   try {
     await client.send(new DescribeSecretCommand({ SecretId: secretId }));
@@ -132,7 +150,7 @@ async function syncSecrets(config: Config, parsed: ParsedEnv) {
     await createOrUpdateSecret({
       client,
       secretId: config.envSecretName,
-      value: parsed.envSecrets,
+      value: normalizeSecretRecord(parsed.envSecrets),
       description: `Environment secrets for ${config.environment}`,
     });
   } else {
@@ -146,7 +164,7 @@ async function syncSecrets(config: Config, parsed: ParsedEnv) {
     await createOrUpdateSecret({
       client,
       secretId: config.repoSecretName,
-      value: parsed.repoSecrets,
+      value: normalizeSecretRecord(parsed.repoSecrets),
       description: 'Repository-level secrets',
     });
   } else {
